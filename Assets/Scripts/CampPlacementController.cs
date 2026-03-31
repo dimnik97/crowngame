@@ -23,6 +23,7 @@ public class CampPlacementController : MonoBehaviour
 
     [Header("Placement Settings")]
     [SerializeField] private float placementRadius = 6f;
+    [SerializeField] private float campBuildRadius = 8f;
     [SerializeField] private float previewYOffset = 0.05f;
     [SerializeField] private float spawnYOffset = 0f;
     [SerializeField] private KeyCode selectCampfireKey = KeyCode.Alpha1;
@@ -42,6 +43,14 @@ public class CampPlacementController : MonoBehaviour
     [SerializeField] private GameObject buildModePanel;
     [SerializeField] private Text buildModeText;
 
+    [Header("World Radius Visualization")]
+    [SerializeField] private bool showWorldRadii = true;
+    [SerializeField] private int radiusSegments = 64;
+    [SerializeField] private float radiusLineWidth = 0.08f;
+    [SerializeField] private float radiusYOffset = 0.08f;
+    [SerializeField] private Color playerRadiusColor = new Color(1f, 0.92f, 0.25f, 0.95f);
+    [SerializeField] private Color campRadiusColor = new Color(0.25f, 0.9f, 1f, 0.95f);
+
     private bool isPlacementMode;
     private BuildType selectedBuildType = BuildType.None;
 
@@ -53,10 +62,18 @@ public class CampPlacementController : MonoBehaviour
     private bool hasPreviewPoint;
     private bool canPlaceHere;
 
+    private GameObject playerRadiusVisual;
+    private GameObject campRadiusVisual;
+    private LineRenderer playerRadiusRenderer;
+    private LineRenderer campRadiusRenderer;
+
     private void Awake()
     {
         if (mainCamera == null)
             mainCamera = Camera.main;
+
+        EnsureRadiusVisualsExist();
+        SetRadiusVisualsVisible(false, false);
     }
 
     private void Start()
@@ -86,6 +103,7 @@ public class CampPlacementController : MonoBehaviour
             return;
 
         UpdatePreview();
+        UpdateRadiusVisuals();
 
         if (Input.GetKeyDown(cancelKey) || Input.GetKeyDown(cancelMouseKey))
         {
@@ -121,18 +139,37 @@ public class CampPlacementController : MonoBehaviour
             return;
         }
 
-        if (!CanAfford(buildType))
+        selectedBuildType = buildType;
+
+        if (!HasCampForSelectedBuild())
         {
-            ShowNotEnoughResourcesMessage(buildType);
-            Debug.Log($"Недостаточно ресурсов для постройки: {GetBuildDisplayName(buildType)}");
+            UpdateBuildModeUI(
+                true,
+                $"Нельзя строить: {GetBuildDisplayName(buildType)}\n" +
+                "Сначала поставь костёр"
+            );
+
+            isPlacementMode = false;
+            SetPreviewVisible(false);
+            SetRadiusVisualsVisible(false, false);
             return;
         }
 
-        selectedBuildType = buildType;
+        if (!CanAfford(buildType))
+        {
+            ShowNotEnoughResourcesMessage(buildType);
+
+            isPlacementMode = false;
+            SetPreviewVisible(false);
+            SetRadiusVisualsVisible(false, false);
+            return;
+        }
+
         isPlacementMode = true;
 
         EnsurePreviewExistsForSelectedBuild();
         SetPreviewVisible(true);
+        UpdateRadiusVisuals();
 
         UpdateBuildModeUI(
             true,
@@ -151,6 +188,7 @@ public class CampPlacementController : MonoBehaviour
         selectedBuildType = BuildType.None;
 
         SetPreviewVisible(false);
+        SetRadiusVisualsVisible(false, false);
         UpdateBuildModeUI(false, string.Empty);
     }
 
@@ -162,13 +200,14 @@ public class CampPlacementController : MonoBehaviour
         if (!hasPreviewPoint)
             return;
 
-        if (!canPlaceHere)
+        string blockReason = GetPlacementBlockReason(currentPreviewPoint);
+        if (!string.IsNullOrEmpty(blockReason))
         {
             UpdateBuildModeUI(
                 true,
-                "Слишком далеко от игрока\n" +
+                $"{blockReason}\n" +
                 $"Стоимость: {GetCostText(selectedBuildType)}\n" +
-                "Подойди ближе\n" +
+                "ЛКМ — поставить\n" +
                 "ПКМ / Esc — отмена"
             );
             return;
@@ -191,7 +230,6 @@ public class CampPlacementController : MonoBehaviour
 
         Vector3 spawnPoint = currentPreviewPoint + Vector3.up * spawnYOffset;
         GameObject prefab = GetPrefabForBuildType(selectedBuildType);
-
         GameObject spawnedObject = Instantiate(prefab, spawnPoint, Quaternion.identity);
 
         if (selectedBuildType == BuildType.Campfire)
@@ -236,7 +274,9 @@ public class CampPlacementController : MonoBehaviour
 
         hasPreviewPoint = true;
         currentPreviewPoint = point;
-        canPlaceHere = IsInsidePlacementRadius(point);
+
+        string blockReason = GetPlacementBlockReason(point);
+        canPlaceHere = string.IsNullOrEmpty(blockReason);
 
         if (previewInstance != null)
         {
@@ -259,11 +299,146 @@ public class CampPlacementController : MonoBehaviour
         {
             UpdateBuildModeUI(
                 true,
-                "Нельзя поставить: слишком далеко\n" +
+                $"{blockReason}\n" +
                 $"Стоимость: {GetCostText(selectedBuildType)}\n" +
-                "Подойди ближе к точке\n" +
+                "ЛКМ — поставить\n" +
                 "ПКМ / Esc — отмена"
             );
+        }
+    }
+
+    private bool SelectedBuildRequiresCamp()
+    {
+        return selectedBuildType != BuildType.None &&
+               selectedBuildType != BuildType.Campfire;
+    }
+
+    private bool HasCampForSelectedBuild()
+    {
+        if (!SelectedBuildRequiresCamp())
+            return true;
+
+        return CampManager.Instance != null && CampManager.Instance.HasCamp();
+    }
+
+    private bool IsInsideCampBuildRadius(Vector3 worldPoint)
+    {
+        if (CampManager.Instance == null || !CampManager.Instance.HasCamp())
+            return false;
+
+        Vector3 campCenter = CampManager.Instance.CurrentCamp.WaitingCenter;
+
+        Vector3 campFlat = new Vector3(campCenter.x, 0f, campCenter.z);
+        Vector3 pointFlat = new Vector3(worldPoint.x, 0f, worldPoint.z);
+
+        return Vector3.Distance(campFlat, pointFlat) <= campBuildRadius;
+    }
+
+    private string GetPlacementBlockReason(Vector3 point)
+    {
+        if (!IsInsidePlacementRadius(point))
+            return "Слишком далеко от игрока";
+
+        if (SelectedBuildRequiresCamp() && !HasCampForSelectedBuild())
+            return "Сначала поставь костёр";
+
+        if (SelectedBuildRequiresCamp() && !IsInsideCampBuildRadius(point))
+            return "Нужно строить рядом с лагерем";
+
+        return string.Empty;
+    }
+
+    private bool TryGetGroundPoint(out Vector3 point)
+    {
+        point = Vector3.zero;
+
+        if (mainCamera == null)
+            return false;
+
+        Ray ray = mainCamera.ScreenPointToRay(Input.mousePosition);
+
+        if (Physics.Raycast(ray, out RaycastHit hit, 200f, groundMask))
+        {
+            point = hit.point;
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool IsInsidePlacementRadius(Vector3 worldPoint)
+    {
+        if (player == null)
+            return false;
+
+        Vector3 playerFlat = new Vector3(player.position.x, 0f, player.position.z);
+        Vector3 pointFlat = new Vector3(worldPoint.x, 0f, worldPoint.z);
+
+        return Vector3.Distance(playerFlat, pointFlat) <= placementRadius;
+    }
+
+    private bool CanAfford(BuildType buildType)
+    {
+        if (ResourceInventory.Instance == null)
+            return true;
+
+        return ResourceInventory.Instance.HasEnough(GetCostForBuildType(buildType));
+    }
+
+    private string GetCostText(BuildType buildType)
+    {
+        if (ResourceInventory.Instance == null)
+            return "Неизвестно";
+
+        return ResourceInventory.Instance.GetCostText(GetCostForBuildType(buildType));
+    }
+
+    private void ShowNotEnoughResourcesMessage(BuildType buildType)
+    {
+        UpdateBuildModeUI(
+            true,
+            $"Недостаточно ресурсов для: {GetBuildDisplayName(buildType)}\n" +
+            $"Нужно: {GetCostText(buildType)}\n" +
+            "Собери ресурсы поблизости"
+        );
+    }
+
+    private GameObject GetPrefabForBuildType(BuildType buildType)
+    {
+        switch (buildType)
+        {
+            case BuildType.Campfire:
+                return campfirePrefab;
+            case BuildType.Workshop:
+                return workshopPrefab;
+            default:
+                return null;
+        }
+    }
+
+    private ResourceCost[] GetCostForBuildType(BuildType buildType)
+    {
+        switch (buildType)
+        {
+            case BuildType.Campfire:
+                return campfireCost;
+            case BuildType.Workshop:
+                return workshopCost;
+            default:
+                return null;
+        }
+    }
+
+    private string GetBuildDisplayName(BuildType buildType)
+    {
+        switch (buildType)
+        {
+            case BuildType.Campfire:
+                return "Костёр";
+            case BuildType.Workshop:
+                return "Мастерская";
+            default:
+                return "Неизвестно";
         }
     }
 
@@ -356,91 +531,6 @@ public class CampPlacementController : MonoBehaviour
             previewInstance.SetActive(visible);
     }
 
-    private bool TryGetGroundPoint(out Vector3 point)
-    {
-        point = Vector3.zero;
-
-        if (mainCamera == null)
-            return false;
-
-        Ray ray = mainCamera.ScreenPointToRay(Input.mousePosition);
-
-        if (Physics.Raycast(ray, out RaycastHit hit, 200f, groundMask))
-        {
-            point = hit.point;
-            return true;
-        }
-
-        return false;
-    }
-
-    private bool IsInsidePlacementRadius(Vector3 worldPoint)
-    {
-        if (player == null)
-            return false;
-
-        Vector3 playerFlat = new Vector3(player.position.x, 0f, player.position.z);
-        Vector3 pointFlat = new Vector3(worldPoint.x, 0f, worldPoint.z);
-
-        return Vector3.Distance(playerFlat, pointFlat) <= placementRadius;
-    }
-
-    private bool CanAfford(BuildType buildType)
-    {
-        if (ResourceInventory.Instance == null)
-            return true;
-
-        return ResourceInventory.Instance.HasEnough(GetCostForBuildType(buildType));
-    }
-
-    private string GetCostText(BuildType buildType)
-    {
-        if (ResourceInventory.Instance == null)
-            return "Неизвестно";
-
-        return ResourceInventory.Instance.GetCostText(GetCostForBuildType(buildType));
-    }
-
-    private void ShowNotEnoughResourcesMessage(BuildType buildType)
-    {
-        UpdateBuildModeUI(
-            true,
-            $"Недостаточно ресурсов для: {GetBuildDisplayName(buildType)}\n" +
-            $"Нужно: {GetCostText(buildType)}\n" +
-            "Собери ресурсы поблизости"
-        );
-    }
-
-    private GameObject GetPrefabForBuildType(BuildType buildType)
-    {
-        switch (buildType)
-        {
-            case BuildType.Campfire: return campfirePrefab;
-            case BuildType.Workshop: return workshopPrefab;
-            default: return null;
-        }
-    }
-
-    private ResourceCost[] GetCostForBuildType(BuildType buildType)
-    {
-        switch (buildType)
-        {
-            case BuildType.Campfire: return campfireCost;
-            case BuildType.Workshop: return workshopCost;
-            default: return null;
-        }
-    }
-
-    private string GetBuildDisplayName(BuildType buildType)
-    {
-        switch (buildType)
-        {
-            case BuildType.Campfire: return "Костёр";
-            case BuildType.Workshop: return "Мастерская";
-            default: return "Неизвестно";
-        }
-    }
-
     private void UpdateBuildModeUI(bool visible, string message)
     {
         if (buildModePanel != null)
@@ -466,20 +556,124 @@ public class CampPlacementController : MonoBehaviour
             SetLayerRecursively(child.gameObject, layer);
     }
 
+    private void EnsureRadiusVisualsExist()
+    {
+        if (playerRadiusRenderer == null)
+        {
+            playerRadiusVisual = new GameObject("PlayerBuildRadius");
+            playerRadiusVisual.transform.SetParent(transform);
+            playerRadiusRenderer = playerRadiusVisual.AddComponent<LineRenderer>();
+            SetupRadiusRenderer(playerRadiusRenderer, playerRadiusColor);
+        }
+
+        if (campRadiusRenderer == null)
+        {
+            campRadiusVisual = new GameObject("CampBuildRadius");
+            campRadiusVisual.transform.SetParent(transform);
+            campRadiusRenderer = campRadiusVisual.AddComponent<LineRenderer>();
+            SetupRadiusRenderer(campRadiusRenderer, campRadiusColor);
+        }
+    }
+
+    private void SetupRadiusRenderer(LineRenderer lr, Color color)
+    {
+        lr.useWorldSpace = true;
+        lr.loop = true;
+        lr.positionCount = radiusSegments;
+        lr.widthMultiplier = radiusLineWidth;
+        lr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+        lr.receiveShadows = false;
+        lr.textureMode = LineTextureMode.Stretch;
+        lr.alignment = LineAlignment.View;
+
+        Material mat = new Material(Shader.Find("Sprites/Default"));
+        lr.material = mat;
+        lr.startColor = color;
+        lr.endColor = color;
+    }
+
+    private void UpdateRadiusVisuals()
+    {
+        if (!showWorldRadii || !isPlacementMode)
+        {
+            SetRadiusVisualsVisible(false, false);
+            return;
+        }
+
+        bool showPlayer = player != null;
+        bool showCamp = SelectedBuildRequiresCamp() &&
+                        CampManager.Instance != null &&
+                        CampManager.Instance.HasCamp();
+
+        SetRadiusVisualsVisible(showPlayer, showCamp);
+
+        if (showPlayer)
+            DrawCircle(playerRadiusRenderer, player.position, placementRadius);
+
+        if (showCamp)
+            DrawCircle(campRadiusRenderer, CampManager.Instance.CurrentCamp.WaitingCenter, campBuildRadius);
+    }
+
+    private void DrawCircle(LineRenderer lr, Vector3 center, float radius)
+    {
+        if (lr == null)
+            return;
+
+        if (radiusSegments < 3)
+            radiusSegments = 3;
+
+        if (lr.positionCount != radiusSegments)
+            lr.positionCount = radiusSegments;
+
+        Vector3 drawCenter = center + Vector3.up * radiusYOffset;
+
+        float step = 2f * Mathf.PI / radiusSegments;
+        for (int i = 0; i < radiusSegments; i++)
+        {
+            float angle = i * step;
+            float x = Mathf.Cos(angle) * radius;
+            float z = Mathf.Sin(angle) * radius;
+            lr.SetPosition(i, drawCenter + new Vector3(x, 0f, z));
+        }
+    }
+
+    private void SetRadiusVisualsVisible(bool showPlayer, bool showCamp)
+    {
+        if (playerRadiusVisual != null)
+            playerRadiusVisual.SetActive(showPlayer);
+
+        if (campRadiusVisual != null)
+            campRadiusVisual.SetActive(showCamp);
+    }
+
     private void OnDisable()
     {
         CancelPlacement();
     }
 
+    private void OnDestroy()
+    {
+        if (playerRadiusRenderer != null && playerRadiusRenderer.material != null)
+            Destroy(playerRadiusRenderer.material);
+
+        if (campRadiusRenderer != null && campRadiusRenderer.material != null)
+            Destroy(campRadiusRenderer.material);
+    }
+
     private void OnDrawGizmosSelected()
     {
-        if (player == null)
-            return;
+        if (player != null)
+        {
+            Gizmos.color = Color.yellow;
+            Vector3 playerCenter = player.position + Vector3.up * 0.1f;
+            Gizmos.DrawWireSphere(playerCenter, placementRadius);
+        }
 
-        Gizmos.color = Color.yellow;
-        Vector3 center = player.position;
-        center.y += 0.1f;
-
-        Gizmos.DrawWireSphere(center, placementRadius);
+        if (CampManager.Instance != null && CampManager.Instance.HasCamp())
+        {
+            Gizmos.color = Color.cyan;
+            Vector3 campCenter = CampManager.Instance.CurrentCamp.WaitingCenter + Vector3.up * 0.15f;
+            Gizmos.DrawWireSphere(campCenter, campBuildRadius);
+        }
     }
 }
