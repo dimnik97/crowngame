@@ -7,6 +7,24 @@ public class TopDownCameraFollow : MonoBehaviour
     [SerializeField] private float followSpeed = 10f;
     [SerializeField] private Vector3 lookOffset = new Vector3(0f, 1.5f, 0f);
 
+    private Quaternion fixedRotation;
+    private bool hasFixedRotation;
+
+    private void Awake()
+    {
+        UpdateFixedRotation();
+
+        if (hasFixedRotation)
+        {
+            transform.rotation = fixedRotation;
+        }
+    }
+
+    private void OnValidate()
+    {
+        UpdateFixedRotation();
+    }
+
     private void LateUpdate()
     {
         if (target == null) return;
@@ -18,6 +36,23 @@ public class TopDownCameraFollow : MonoBehaviour
             followSpeed * Time.deltaTime
         );
 
-        transform.LookAt(target.position + lookOffset);
+        if (hasFixedRotation)
+        {
+            transform.rotation = fixedRotation;
+        }
+    }
+
+    private void UpdateFixedRotation()
+    {
+        Vector3 lookDirection = lookOffset - offset;
+
+        if (lookDirection.sqrMagnitude <= Mathf.Epsilon)
+        {
+            hasFixedRotation = false;
+            return;
+        }
+
+        fixedRotation = Quaternion.LookRotation(lookDirection.normalized, Vector3.up);
+        hasFixedRotation = true;
     }
 }

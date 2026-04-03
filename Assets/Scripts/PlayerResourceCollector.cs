@@ -7,10 +7,19 @@ public class PlayerResourceCollector : MonoBehaviour
     [SerializeField] private LayerMask resourceMask;
     [SerializeField] private float scanInterval = 0.1f;
 
+    private PlayerTopDownController playerController;
     private float scanTimer;
+
+    private void Awake()
+    {
+        playerController = GetComponent<PlayerTopDownController>();
+    }
 
     private void Update()
     {
+        if (playerController != null && !playerController.IsAlive)
+            return;
+
         scanTimer -= Time.deltaTime;
 
         if (scanTimer > 0f)

@@ -22,4 +22,12 @@ public class Camp : MonoBehaviour
         Vector3 center = WaitingCenter;
         return center + new Vector3(offset.x, 0f, offset.y);
     }
+
+    public Vector3 GetRandomPatrolPosition(float patrolRadius)
+    {
+        float radius = Mathf.Max(0.1f, patrolRadius);
+        Vector2 offset = Random.insideUnitCircle * radius;
+        Vector3 center = WaitingCenter;
+        return center + new Vector3(offset.x, 0f, offset.y);
+    }
 }

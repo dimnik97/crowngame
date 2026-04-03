@@ -66,11 +66,15 @@ public class CampPlacementController : MonoBehaviour
     private GameObject campRadiusVisual;
     private LineRenderer playerRadiusRenderer;
     private LineRenderer campRadiusRenderer;
+    private PlayerTopDownController playerController;
 
     private void Awake()
     {
         if (mainCamera == null)
             mainCamera = Camera.main;
+
+        if (player != null)
+            playerController = player.GetComponent<PlayerTopDownController>();
 
         EnsureRadiusVisualsExist();
         SetRadiusVisualsVisible(false, false);
@@ -83,6 +87,14 @@ public class CampPlacementController : MonoBehaviour
 
     private void Update()
     {
+        if (playerController != null && !playerController.IsAlive)
+        {
+            if (isPlacementMode)
+                CancelPlacement();
+
+            return;
+        }
+
         if (Input.GetKeyDown(selectCampfireKey))
         {
             if (isPlacementMode && selectedBuildType == BuildType.Campfire)
